@@ -26,3 +26,6 @@ lexaloffle.com/bbs/?tid=2145
 ## Building
 
 Install [devkitPro](https://devkitpro.org/wiki/Getting_Started) and select "GBA Development" during installation. Then run "make" in a command prompt.
+
+## Celeste Classic 2
+Also see the GBA port of Celeste Classic 2: https://github.com/Skaleee/Celeste2-GBA
