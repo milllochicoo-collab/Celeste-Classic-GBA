@@ -1,0 +1,121 @@
+name: Build ROM and APK
+on:
+  workflow_dispatch:
+
+jobs:
+  rom:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GBA libs
+        run: dkp-pacman -S --noconfirm gba-dev
+      - name: Build ROM
+        run: |
+          export DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM
+          make
+          mkdir -p out && cp ./*.gba out/celeste.gba
+      - uses: actions/upload-artifact@v4
+        with: { name: celeste-gba, path: out/celeste.gba }
+
+  apk:
+    needs: rom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: celeste-gba, path: rom }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.7" }
+      - name: Generate Android project
+        run: |
+          set -e
+          A=android
+          mkdir -p $A/app/src/main/java/com/example/celeste $A/app/src/main/assets $A/app/src/main/res/xml
+          cat > $A/settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "CelesteGBA"
+          include(":app")
+          EOF
+          cat > $A/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          cat > $A/app/build.gradle.kts <<'EOF'
+          plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+          android {
+              namespace = "com.example.celeste"
+              compileSdk = 34
+              defaultConfig { applicationId = "com.example.celeste"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+              kotlinOptions { jvmTarget = "17" }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+          }
+          dependencies { implementation("androidx.core:core-ktx:1.13.1") }
+          EOF
+          cat > $A/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <queries><package android:name="io.mgba.mgba" /></queries>
+              <application android:label="Celeste Classic GBA" android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.files"
+                      android:exported="false" android:grantUriPermissions="true">
+                      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+                  </provider>
+              </application>
+          </manifest>
+          EOF
+          cat > $A/app/src/main/res/xml/file_paths.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths><cache-path name="rom" path="rom/" /></paths>
+          EOF
+          cat > $A/app/src/main/java/com/example/celeste/MainActivity.kt <<'EOF'
+          package com.example.celeste
+          
+          import android.app.Activity
+          import android.content.ActivityNotFoundException
+          import android.content.Intent
+          import android.os.Bundle
+          import android.widget.Toast
+          import androidx.core.content.FileProvider
+          import java.io.File
+          
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val dir = File(cacheDir, "rom").apply { mkdirs() }
+                  val rom = File(dir, "celeste.gba")
+                  assets.open("celeste.gba").use { i -> rom.outputStream().use { o -> i.copyTo(o) } }
+                  val uri = FileProvider.getUriForFile(this, "$packageName.files", rom)
+                  val base = Intent(Intent.ACTION_VIEW).apply {
+                      setDataAndType(uri, "application/octet-stream")
+                      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                  }
+                  try {
+                      startActivity(Intent(base).setPackage("io.mgba.mgba"))
+                  } catch (e: ActivityNotFoundException) {
+                      try { startActivity(Intent.createChooser(base, "Open with a GBA emulator")) }
+                      catch (e2: ActivityNotFoundException) {
+                          Toast.makeText(this, "Install mGBA (or another GBA emulator) first.", Toast.LENGTH_LONG).show()
+                      }
+                  }
+                  finish()
+              }
+          }
+          EOF
+          cp rom/celeste.gba android/app/src/main/assets/celeste.gba
+      - name: Build debug APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with: { name: celeste-apk, path: android/app/build/outputs/apk/debug/app-debug.apk }
+        
